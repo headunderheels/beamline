@@ -7,7 +7,7 @@ import equinox as eqx
 import jax.numpy as jnp
 
 from beamline.jax.coordinates import Cartesian3, Tangent
-from beamline.jax.geometry import line_plane_intersection, Volume
+from beamline.jax.geometry import Volume
 from beamline.jax.absorber.volume import MaterialVolume
 from beamline.jax.absorber.material import Material, StragglingParams
 from beamline.jax.kinematics import ParticleState
@@ -38,21 +38,18 @@ class WedgePrism(MaterialVolume, Volume):
 
     # --- point-in-triangle helper (projected to z=0) ---
     def _point_in_base_triangle(self, p: Cartesian3) -> SBool:
-        # project point to z=0 local triangle coordinates
-        # Solve p_xy = v0_xy + alpha * (v1-v0)_xy + beta * (v2-v0)_xy
-        a = jnp.stack(
+        # Build 2x2 matrix for solving barycentric coordinates in XY plane
+        a = jnp.array(
             [
-                (self.v1.x - self.v0.x, self.v2.x - self.v0.x),
-                (self.v1.y - self.v0.y, self.v2.y - self.v0.y),
-            ],
-            axis=-1,
-        )  # 2x2
+                [self.v1.x - self.v0.x, self.v2.x - self.v0.x],
+                [self.v1.y - self.v0.y, self.v2.y - self.v0.y],
+            ]
+        )
         rhs = jnp.array([p.x - self.v0.x, p.y - self.v0.y])
-        # handle degenerate triangle by returning False
         det = a[0, 0] * a[1, 1] - a[0, 1] * a[1, 0]
-        safe_det = jnp.where(det == 0.0, 1.0, det)
-        sol = jnp.where(det == 0.0, jnp.array([jnp.inf, jnp.inf]), jnp.linalg.solve(a, rhs))
-        alpha, beta = sol[0], sol[1]
+        # handle degenerate triangle: report not inside
+        alpha_beta = jnp.where(det == 0.0, jnp.array([jnp.inf, jnp.inf]), jnp.linalg.solve(a, rhs))
+        alpha, beta = alpha_beta[0], alpha_beta[1]
         inside = (alpha >= 0.0) & (beta >= 0.0) & (alpha + beta <= 1.0)
         return inside
 
@@ -67,39 +64,57 @@ class WedgePrism(MaterialVolume, Volume):
         #  - three side planes (each edge extruded along z)
         ts = []
 
-        # --- end caps (triangle planes) ---
-        base_u = self.v1  # plane_u = v1 (point one unit along u direction)
-        base_v = self.v2  # plane_v = v2
-        # bottom cap at z = -length/2: shift vertices in z
-        plane_pt_bot = Cartesian3.make(x=self.v0.x, y=self.v0.y, z=-self.length / 2)
-        plane_u_bot = Cartesian3.make(x=self.v1.x, y=self.v1.y, z=-self.length / 2)
-        plane_v_bot = Cartesian3.make(x=self.v2.x, y=self.v2.y, z=-self.length / 2)
-        t_bot, uu, vv = line_plane_intersection(ray, plane_pt_bot, plane_u_bot, plane_v_bot)
-        # uu and vv are coordinates in the parametrization plane; validate inside triangle
-        t_bot = jnp.where((uu >= 0.0) & (vv >= 0.0) & (uu + vv <= 1.0), t_bot, jnp.inf)
-        ts.append(t_bot)
+        # --- end caps (triangular planes at constant z) ---
+        for zcap in (-self.length / 2, self.length / 2):
+            # avoid division by zero when ray.t.z == 0
+            denom = ray.t.z
+            t = jnp.where(denom == 0.0, jnp.inf, (zcap - ray.p.z) / denom)
+            # if t is infinite, skip
+            xint = ray.p.x + ray.t.x * t
+            yint = ray.p.y + ray.t.y * t
+            # Solve barycentric in XY plane
+            a = jnp.array(
+                [
+                    [self.v1.x - self.v0.x, self.v2.x - self.v0.x],
+                    [self.v1.y - self.v0.y, self.v2.y - self.v0.y],
+                ]
+            )
+            rhs = jnp.array([xint - self.v0.x, yint - self.v0.y])
+            det = a[0, 0] * a[1, 1] - a[0, 1] * a[1, 0]
+            alpha_beta = jnp.where(det == 0.0, jnp.array([jnp.inf, jnp.inf]), jnp.linalg.solve(a, rhs))
+            alpha, beta = alpha_beta[0], alpha_beta[1]
+            in_tri = (alpha >= 0.0) & (beta >= 0.0) & (alpha + beta <= 1.0)
+            tcap = jnp.where(in_tri, t, jnp.inf)
+            ts.append(tcap)
 
-        # top cap at z = +length/2
-        plane_pt_top = Cartesian3.make(x=self.v0.x, y=self.v0.y, z=self.length / 2)
-        plane_u_top = Cartesian3.make(x=self.v1.x, y=self.v1.y, z=self.length / 2)
-        plane_v_top = Cartesian3.make(x=self.v2.x, y=self.v2.y, z=self.length / 2)
-        t_top, uu, vv = line_plane_intersection(ray, plane_pt_top, plane_u_top, plane_v_top)
-        t_top = jnp.where((uu >= 0.0) & (vv >= 0.0) & (uu + vv <= 1.0), t_top, jnp.inf)
-        ts.append(t_top)
-
-        # --- side faces (each defined by edge vi->vj and the z axis) ---
+        # --- side faces (each defined by edge vi->vj and vertical z direction) ---
         verts = (self.v0, self.v1, self.v2)
         for i in range(3):
             vi = verts[i]
             vj = verts[(i + 1) % 3]
-            # plane through vi with basis vectors along edge (vj) and z unit
-            plane_pt_side = vi
-            plane_u_side = vj  # point along edge
-            plane_v_side = Cartesian3.make(x=vi.x, y=vi.y, z=vi.z + 1.0)  # +1 mm in z gives z axis basis
-            t_side, u_edge, v_z = line_plane_intersection(ray, plane_pt_side, plane_u_side, plane_v_side)
-            # u_edge between 0 and 1 means within the finite edge segment
-            # v_z is z coordinate relative to vi.z (since plane_v_side-plane_pt_side = z_hat*1.0)
-            t_side = jnp.where((u_edge >= 0.0) & (u_edge <= 1.0) & (v_z >= -self.length / 2) & (v_z <= self.length / 2), t_side, jnp.inf)
+            edge = Cartesian3.make(x=vj.x - vi.x, y=vj.y - vi.y, z=vj.z - vi.z)
+            # plane normal = edge x z_hat (z_hat = (0,0,1))
+            zhat = Cartesian3.make(x=0.0, y=0.0, z=1.0)
+            n = Cartesian3.make(
+                x=edge.y * zhat.z - edge.z * zhat.y,
+                y=edge.z * zhat.x - edge.x * zhat.z,
+                z=edge.x * zhat.y - edge.y * zhat.x,
+            )
+            # denom = n . ray.t
+            denom = n.x * ray.t.x + n.y * ray.t.y + n.z * ray.t.z
+            # avoid division by zero
+            t_side = jnp.where(denom == 0.0, jnp.inf, (n.x * (vi.x - ray.p.x) + n.y * (vi.y - ray.p.y) + n.z * (vi.z - ray.p.z)) / denom)
+            # intersection point
+            xint = ray.p.x + ray.t.x * t_side
+            yint = ray.p.y + ray.t.y * t_side
+            zint = ray.p.z + ray.t.z * t_side
+            # parameter along edge: project (ip - vi) onto edge
+            edge_sq = edge.x * edge.x + edge.y * edge.y + edge.z * edge.z
+            # if edge_sq == 0 (degenerate), skip
+            u = jnp.where(edge_sq == 0.0, jnp.inf, ((xint - vi.x) * edge.x + (yint - vi.y) * edge.y + (zint - vi.z) * edge.z) / edge_sq)
+            in_edge = (u >= 0.0) & (u <= 1.0)
+            in_z = (zint >= -self.length / 2) & (zint <= self.length / 2)
+            t_side = jnp.where(in_edge & in_z, t_side, jnp.inf)
             ts.append(t_side)
 
         ts_arr = jnp.stack(ts)
