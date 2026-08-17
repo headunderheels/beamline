@@ -5,6 +5,7 @@ import pytest
 from beamline.jax.coordinates import Cartesian3, Tangent
 from beamline.jax.geometry import (
     CylinderVolume,
+    WedgeVolume,
     line_cylinder_intersection,
     line_plane_intersection,
 )
@@ -233,3 +234,160 @@ def test_cylinder_volume():
         t=Cartesian3.make(x=0.25, z=1.0),
     )
     assert volume.signed_time_to_boundary(ray) == approx(-1.0)
+
+class ConcreteWedgeVolume(WedgeVolume):
+    dz: SFloat
+    theta: SFloat
+    phi: SFloat
+    dy1: SFloat
+    dx1: SFloat
+    dx2: SFloat
+    alpha1: SFloat
+    dy2: SFloat
+    dx3: SFloat
+    dx4: SFloat
+    alpha2: SFloat
+
+
+def test_wedge_volume_box():
+    # Degenerate G4Trap = an axis-aligned box of half-sizes (1, 1, 2):
+    # no tilt (theta=phi=0), no shear (alpha=0), constant cross-section.
+    volume = ConcreteWedgeVolume(
+        dz=2.0,
+        theta=0.0,
+        phi=0.0,
+        dy1=1.0,
+        dx1=1.0,
+        dx2=1.0,
+        alpha1=0.0,
+        dy2=1.0,
+        dx3=1.0,
+        dx4=1.0,
+        alpha2=0.0,
+    )
+
+    # containment
+    assert volume.contains(Cartesian3.make())
+    assert volume.contains(Cartesian3.make(z=1.9))
+    assert not volume.contains(Cartesian3.make(z=2.1))
+    assert not volume.contains(Cartesian3.make(x=1.1))
+
+    # head-on, before (enters the -z face after 1 unit)
+    ray = Tangent(
+        p=Cartesian3.make(z=-3.0),
+        t=Cartesian3.make(z=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(1.0)
+
+    # head-on, inside (exits the +z face after 2 units)
+    ray = Tangent(
+        p=Cartesian3.make(),
+        t=Cartesian3.make(z=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(-2.0)
+
+    # head-on, past
+    ray = Tangent(
+        p=Cartesian3.make(z=3.0),
+        t=Cartesian3.make(z=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == jnp.inf
+
+    # along x, before (half-x = 1)
+    ray = Tangent(
+        p=Cartesian3.make(x=-2.0),
+        t=Cartesian3.make(x=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(1.0)
+
+    # along x, inside
+    ray = Tangent(
+        p=Cartesian3.make(),
+        t=Cartesian3.make(x=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(-1.0)
+
+
+def test_wedge_volume_trapezoid():
+    # A true trapezoid (Trd-like): x half-width grows linearly from 1 at -dz
+    # to 2 at +dz. At z=0 the half-width is the midpoint, 1.5.
+    volume = ConcreteWedgeVolume(
+        dz=2.0,
+        theta=0.0,
+        phi=0.0,
+        dy1=1.0,
+        dx1=1.0,
+        dx2=1.0,
+        alpha1=0.0,
+        dy2=1.0,
+        dx3=2.0,
+        dx4=2.0,
+        alpha2=0.0,
+    )
+
+    # containment: half-x at z=0 is 1.5
+    assert volume.contains(Cartesian3.make())
+    assert volume.contains(Cartesian3.make(x=1.4))
+    assert not volume.contains(Cartesian3.make(x=1.6))
+
+    # x-ray through z=0 from outside: hits the slanted +/-x face at 1.5
+    ray = Tangent(
+        p=Cartesian3.make(x=-3.0),
+        t=Cartesian3.make(x=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(1.5)
+
+    # x-ray from the centre, inside
+    ray = Tangent(
+        p=Cartesian3.make(),
+        t=Cartesian3.make(x=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(-1.5)
+
+
+def test_wedge_volume_tilted():
+    # Tilted trap: the line joining the -/+dz face centres is inclined in x
+    # by tan(theta) = 0.25 (phi=0), so the +dz centre sits at x=+0.5 and the
+    # -dz centre at x=-0.5. Cross-section is a constant 1x1 box otherwise.
+    volume = ConcreteWedgeVolume(
+        dz=2.0,
+        theta=jnp.arctan(0.25),
+        phi=0.0,
+        dy1=1.0,
+        dx1=1.0,
+        dx2=1.0,
+        alpha1=0.0,
+        dy2=1.0,
+        dx3=1.0,
+        dx4=1.0,
+        alpha2=0.0,
+    )
+
+    # A ray travelling along the tilted centre line, from inside the origin:
+    # exits the +z face after 2 units of z-travel.
+    ray = Tangent(
+        p=Cartesian3.make(),
+        t=Cartesian3.make(x=0.25, z=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(-2.0)
+
+    # A ray along the tilt axis, starting well before the -z face.
+    ray = Tangent(
+        p=Cartesian3.make(x=-1.0, z=-4.0),
+        t=Cartesian3.make(x=0.25, z=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(2.0)
+
+    # A purely axial ray at x=0 still enters/exits the tilted z-faces at
+    # +/-dz in z (the z-faces remain perpendicular to z), so t = 2.
+    ray = Tangent(
+        p=Cartesian3.make(z=-4.0),
+        t=Cartesian3.make(z=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(2.0)
+
+    ray = Tangent(
+        p=Cartesian3.make(),
+        t=Cartesian3.make(z=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(-2.0)

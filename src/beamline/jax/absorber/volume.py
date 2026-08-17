@@ -21,6 +21,7 @@ from beamline.jax.absorber.material import Material, StragglingParams
 from beamline.jax.coordinates import Cartesian3, Tangent, Transform
 from beamline.jax.geometry import (
     CylinderVolume,
+    WedgeVolume,
     Volume,
 )
 from beamline.jax.kinematics import ParticleState
@@ -108,6 +109,49 @@ class AbsorberCylinder(MaterialVolume, CylinderVolume):
     """Cylinder radius [mm]"""
     length: SFloat
     """Cylinder length along z [mm]"""
+    char_length: SFloat = 5.0 * u.mm
+    """Characteristic segment length for stochastic subdivision [mm]"""
+
+    def characteristic_length(self) -> SFloat:
+        return self.char_length
+
+    def interaction_params(
+        self, state: ParticleState, thickness: SFloat
+    ) -> StragglingParams:
+        return self.material.straggling_params(state, thickness)
+
+class AbsorberWedge(MaterialVolume, WedgeVolume):
+    """A solid trapezoidal wedge absorber, centered at the origin
+
+    Geometry mirrors ``beamline.jax.geometry.WedgeVolume`` (based on G4Trap): the two
+    z-faces are trapezia whose centres need not lie on a line parallel to z, and
+    the four remaining planar faces bound the volume.
+    """
+
+    material: Material = eqx.field(static=True)
+    """The material filling the wedge (a static, hashable config object)"""
+    dz: SFloat
+    """Half-length along z [mm]"""
+    theta: SFloat
+    """Polar angle of the line joining the centres of the -/+dz faces [rad]"""
+    phi: SFloat
+    """Azimuthal angle of the line joining the centres of the -/+dz faces [rad]"""
+    dy1: SFloat
+    """Half-length along y of the face at -dz [mm]"""
+    dx1: SFloat
+    """Half-length along x at y=-dy1 of the face at -dz [mm]"""
+    dx2: SFloat
+    """Half-length along x at y=+dy1 of the face at -dz [mm]"""
+    alpha1: SFloat
+    """Angle wrt the y axis for the face at -dz [rad]"""
+    dy2: SFloat
+    """Half-length along y of the face at +dz [mm]"""
+    dx3: SFloat
+    """Half-length along x at y=-dy2 of the face at +dz [mm]"""
+    dx4: SFloat
+    """Half-length along x at y=+dy2 of the face at +dz [mm]"""
+    alpha2: SFloat
+    """Angle wrt the y axis for the face at +dz [rad]"""
     char_length: SFloat = 5.0 * u.mm
     """Characteristic segment length for stochastic subdivision [mm]"""
 
