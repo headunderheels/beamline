@@ -187,11 +187,22 @@ class ThinShellSolenoid(EMTensorField):
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
         xcyl = point.to_cylindric3()
         Brho, Bz = self.B_elliptic(xcyl.rho, xcyl.z)
-        Bphi = jnp.zeros_like(Brho)
-        E = Tangent(p=point.to_cartesian3(), t=Cartesian3.make())
-        B = Tangent(p=xcyl, t=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
-        return E, B.to_cartesian()
-
+        pcart = point.to_cartesian3()
+        E = Tangent(p=pcart, t=Cartesian3.make())
+        # Project the axisymmetric (Bphi=0) field to cartesian directly. Going
+        # via Tangent.to_cartesian() divides by the rho Lame coefficient, which
+        # is 0/0 = NaN on axis. Here Brho=0 on axis by symmetry, and the
+        # guarded cos/sin phi are 0 there, so the transverse field vanishes
+        # cleanly.
+        rho = xcyl.rho
+        safe_rho = jnp.where(rho == 0.0, 1.0, rho)
+        cosphi = jnp.where(rho == 0.0, 0.0, pcart.x / safe_rho)
+        sinphi = jnp.where(rho == 0.0, 0.0, pcart.y / safe_rho)
+        B = Tangent(
+            p=pcart,
+            t=Cartesian3.make(x=Brho * cosphi, y=Brho * sinphi, z=Bz),
+        )
+        return E, B
 
 class ThickSolenoid(EMTensorField):
     Rin: SFloat

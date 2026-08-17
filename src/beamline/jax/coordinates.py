@@ -81,7 +81,16 @@ class XYMixin:
 
     @property
     def phi(self) -> SFloat:
-        return jnp.atan2(self.y, self.x)
+        # atan2(0, 0) has a NaN gradient at the origin, and when rho/phi/z are
+        # stacked into a Cylindric coordinate the NaN flows back through the
+        # shared stack and poisons rho's gradient too. phi is undefined at the
+        # axis anyway (rho=0), so return a well-defined 0 there with a clean
+        # derivative: feed atan2 safe (nonzero) inputs where rho==0 so its
+        # gradient is finite, then select 0 for both value and tangent.
+        at_origin = (self.x == 0.0) & (self.y == 0.0)
+        safe_x = jnp.where(at_origin, 1.0, self.x)
+        safe_y = jnp.where(at_origin, 0.0, self.y)
+        return jnp.where(at_origin, 0.0, jnp.atan2(safe_y, safe_x))
 
     def delta_phi(self, other: Self) -> SFloat:
         return delta_phi(self.phi, other.phi)
