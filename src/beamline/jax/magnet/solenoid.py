@@ -205,6 +205,16 @@ class ThickSolenoid(EMTensorField):
     def B_shells(
         self, rho: SFloat, z: SFloat, num_shells: int = 200, vmap: bool = False
     ) -> tuple[SFloat, SFloat]:
+        # Matches G4Beamline's own `coil` element exactly (BLCoil.cc,
+        # BLCoil::generateFieldMap/addField): num_shells current sheets at the
+        # radial MIDPOINTS of num_shells equal-width bins spanning
+        # [Rin, Rout] -- never placed exactly at Rin or Rout. Each sheet
+        # carries jphi*dR (dR = bin width), consistent with a uniform volume
+        # current density. This (not a naive `linspace(Rin, Rout, num_shells)`,
+        # which places sheets at the two edges and is inconsistent with a
+        # dR-per-bin current weight at low num_shells) is what reproduces
+        # G4BL's field to <=0.03% even at num_shells=10; verified against a
+        # standalone compile of G4BL 3.08's literal BLCoil.cc.
         dR = (self.Rout - self.Rin) / num_shells
 
         def shell_contrib_R(R: SFloat) -> tuple[SFloat, SFloat]:
@@ -217,7 +227,7 @@ class ThickSolenoid(EMTensorField):
             Brho, Bz = shell_contrib_R(R)
             return (carry[0] + Brho, carry[1] + Bz), None
 
-        shell_radii = jnp.linspace(self.Rin, self.Rout, num_shells)
+        shell_radii = self.Rin + dR / 2 + jnp.arange(num_shells) * dR
         if vmap:
             Brho, Bz = jax.vmap(shell_contrib_R)(shell_radii)
             return jnp.sum(Brho), jnp.sum(Bz)
