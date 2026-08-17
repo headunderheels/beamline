@@ -115,7 +115,7 @@ class BoundaryAwareStepSizeController[ControllerState, DT0: SFloat, Y: ParticleS
             terms, t0, t1, y0, dt0, args, func, error_order
         )
         sdf = self.sdf(y0)
-        max_next_step = self._softclip_sdf(sdf)
+        max_next_step = self._softclip_sdf(jnp.abs(sdf))
         t1 = jnp.minimum(t1, t0 + max_next_step)
         return t1, (sdf, dt0, inner_state)
 
