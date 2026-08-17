@@ -311,7 +311,11 @@ def stochastic_solve[T: ParticleState](
         made_jump = jnp.where(keep_step, ctrl_jump | kick_applied, made_jump)
 
         tprev_out = jnp.where(keep_step, tprev_next, tprev)
-        tnext_out = jnp.where(keep_step, tnext_next, tnext)
+        # tnext is always updated to the controller's freshly proposed value,
+        # accepted or not: on a reject the controller has already computed an
+        # appropriately shrunk retry step, and re-using the *old* (pre-attempt)
+        # tnext instead would retry the identical doomed interval forever.
+        tnext_out = tnext_next
 
         if debug:
             # _probe_tangent is a pass-through for the primal; in forward-mode AD
