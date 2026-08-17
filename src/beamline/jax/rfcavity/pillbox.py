@@ -2,6 +2,7 @@
 
 from typing import Literal
 
+import equinox as eqx
 import hepunits as u
 import jax
 import jax.numpy as jnp
@@ -30,13 +31,13 @@ class PillboxCavity(EMTensorField, CylinderVolume):
     """Resonant frequency of the mode [GHz]"""
     E0: SFloat
     """Peak electric field [MeV/e/mm]"""
-    mode: Literal["TE", "TM"]
+    mode: Literal["TE", "TM"] = eqx.field(static=True)
     """Resonant mode type (transverse electric or transverse magnetic)"""
-    m: int
+    m: int = eqx.field(static=True)
     """Azimuthal mode number"""
-    n: int
+    n: int = eqx.field(static=True)
     """Radial mode number"""
-    p: int
+    p: int = eqx.field(static=True)
     """Longitudinal mode number"""
     phase: SFloat
     """Time phase offset [rad]"""
