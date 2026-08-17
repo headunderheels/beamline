@@ -356,7 +356,17 @@ class Tangent[T: CoordinateChart](eqx.Module):
         Args:
             func: Function that changes basis of the manifold point (e.g. to_cartesian or to_cylindric)
         """
-        tscaled = type(self.t)(coords=self.t.coords / self.p.lame_coefficients())
+        # Divide by the Lame coefficients to get contravariant components, then
+        # (after the JVP) multiply back. A Lame coefficient is zero on a
+        # degenerate axis (e.g. rho=0 in cylindrical, where the phi basis
+        # collapses), which would make this 0/0 = NaN -- and the NaN survives
+        # the later multiply-back. Guard the division with a safe 1.0 there;
+        # the trailing ``* lame_coefficients`` re-applies the true (zero)
+        # coefficient, so any component along a degenerate basis is correctly
+        # zeroed rather than NaN. The double-where keeps the JVP tangent finite.
+        lame_in = self.p.lame_coefficients()
+        safe_lame_in = jnp.where(lame_in == 0.0, 1.0, lame_in)
+        tscaled = type(self.t)(coords=self.t.coords / safe_lame_in)
         p_out, t_out = jax.jvp(func, (self.p,), (tscaled,))
         t_out_norm = type(t_out)(coords=t_out.coords * p_out.lame_coefficients())
         return Tangent(p=p_out, t=t_out_norm)
