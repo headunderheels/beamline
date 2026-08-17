@@ -113,8 +113,9 @@ class SumField(EMTensorField):
         B_total = jnp.array([0.0, 0.0, 0.0])
         for comp in self.components:
             E, B = comp.field_strength(point)
-            E_total.at[:].add(E.t.coords)
-            B_total.at[:].add(B.t.coords)
+            # jax arrays are immutable; .at[].add returns a new array
+            E_total = E_total + E.t.coords
+            B_total = B_total + B.t.coords
         return (
             Tangent(
                 p=point.to_cartesian3(),
@@ -126,6 +127,20 @@ class SumField(EMTensorField):
             ),
         )
 
+    def __call__(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
+        """Sum the contracted force from each component.
+
+        The field contraction is linear in (E, B) for a fixed four-momentum,
+        so summing the per-component contractions equals contracting the summed
+        field. Doing it this way (rather than via ``field_strength``) is also the
+        only correct path when components override ``__call__`` and do not expose
+        a usable ``field_strength`` -- notably ``TransformEMField``, which every
+        placed lattice element uses.
+        """
+        total = jnp.zeros(4)
+        for comp in self.components:
+            total = total + comp(vec).t.coords
+        return Tangent(p=vec.p, t=Cartesian4(coords=total))
 
 class TransformEMField(EMTensorField):
     """A container to transform EM tensor fields
